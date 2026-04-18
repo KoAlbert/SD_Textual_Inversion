@@ -1,0 +1,7 @@
+venv/
+models/
+__pycache__/
+*.pyc
+.env
+textual_inversion_cat/checkpoint-*/
+test_run_output/
