@@ -7,7 +7,7 @@ Converted from Google Colab notebook:
 Usage:
   python SD_Textual_Inversion.py --mode all
   python SD_Textual_Inversion.py --mode train --max_train_steps 3000
-  python SD_Textual_Inversion.py --mode inference --prompt "A photo of <cat-toy>"
+  python SD_Textual_Inversion.py --mode inference --prompt "A photo of <Karby-toy> style Pixar animation to fight Boss" --output_image pixar.png
 """
 
 import os
@@ -24,16 +24,17 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 MODEL_NAME        = "runwayml/stable-diffusion-v1-5"
 MODEL_LOCAL_DIR   = "./models/stable-diffusion-v1-5"
-DATASET_REPO      = "diffusers/cat_toy_example"
-DATA_DIR          = "./cat_toy_example"
-OUTPUT_DIR        = "./textual_inversion_cat"
-PLACEHOLDER_TOKEN = "<cat-toy>"
+DATASET_REPO      = "diffusers/Karby_toy_example"
+DATA_DIR          = "./Karby_toy_example"
+OUTPUT_DIR        = "./textual_inversion_Karby_toy"
+PLACEHOLDER_TOKEN = "<Karby-toy>"
 INITIALIZER_TOKEN = "toy"
 TRAIN_SCRIPT_URL  = (
     "https://raw.githubusercontent.com/huggingface/diffusers/main"
     "/examples/textual_inversion/textual_inversion.py"
 )
 TRAIN_SCRIPT_NAME = "textual_inversion.py"
+VENV_SCRIPTS_DIR  = Path(__file__).parent / "venv" / "Scripts"
 
 
 # ---------------------------------------------------------------------------
@@ -173,22 +174,25 @@ def train(args) -> None:
     model_source = MODEL_LOCAL_DIR if Path(MODEL_LOCAL_DIR).exists() else MODEL_NAME
     print(f"Model source: {model_source}")
 
+    accelerate_bin = str(VENV_SCRIPTS_DIR / "accelerate.exe")
     cmd = [
-        "accelerate", "launch", TRAIN_SCRIPT_NAME,
+        accelerate_bin, "launch", TRAIN_SCRIPT_NAME,
         f"--pretrained_model_name_or_path={model_source}",
         f"--train_data_dir={DATA_DIR}",
         "--learnable_property=object",
         f"--placeholder_token={PLACEHOLDER_TOKEN}",
         f"--initializer_token={INITIALIZER_TOKEN}",
         "--resolution=512",
-        "--train_batch_size=1",
-        "--gradient_accumulation_steps=4",
+        "--train_batch_size=4",
+        "--gradient_accumulation_steps=1",
         f"--max_train_steps={args.max_train_steps}",
         "--learning_rate=5.0e-04",
         "--scale_lr",
         "--lr_scheduler=constant",
         "--lr_warmup_steps=0",
         f"--output_dir={OUTPUT_DIR}",
+        "--mixed_precision=fp16",
+        "--checkpointing_steps=500",
     ]
 
     if args.push_to_hub:
@@ -216,10 +220,19 @@ def inference(args) -> None:
     # Use local model if downloaded, otherwise fall back to HuggingFace Hub
     model_source = MODEL_LOCAL_DIR if Path(MODEL_LOCAL_DIR).exists() else MODEL_NAME
 
+    # Resolve embedding path: specific steps file or default learned_embeds.safetensors
+    if args.embedding_steps:
+        embedding_path = Path(OUTPUT_DIR) / f"learned_embeds-steps-{args.embedding_steps}.safetensors"
+        if not embedding_path.exists():
+            sys.exit(f"[ERROR] Embedding not found: {embedding_path}")
+    else:
+        embedding_path = Path(OUTPUT_DIR) / "learned_embeds.safetensors"
+
     print(f"\n=== Inference ===")
     print(f"Model    : {model_source}")
-    print(f"Embedding: {OUTPUT_DIR}")
+    print(f"Embedding: {embedding_path}")
     print(f"Prompt   : {args.prompt}")
+    print(f"Negative : {args.negative_prompt}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype  = torch.float16 if device == "cuda" else torch.float32
@@ -229,12 +242,22 @@ def inference(args) -> None:
         model_source,
         torch_dtype=dtype,
         use_safetensors=True,
+        safety_checker=None,
+        requires_safety_checker=False,
     ).to(device)
 
-    pipe.load_textual_inversion(OUTPUT_DIR)
+    pipe.load_textual_inversion(str(embedding_path), token=PLACEHOLDER_TOKEN)
+
+    generator = torch.Generator(device=device).manual_seed(args.seed) if args.seed is not None else None
 
     print("Generating image ...")
-    image = pipe(prompt=args.prompt, num_inference_steps=args.num_inference_steps).images[0]
+    image = pipe(
+        prompt=args.prompt,
+        negative_prompt=args.negative_prompt,
+        num_inference_steps=args.num_inference_steps,
+        guidance_scale=args.guidance_scale,
+        generator=generator,
+    ).images[0]
 
     out_path = Path(args.output_image)
     image.save(out_path)
@@ -283,6 +306,29 @@ def parse_args() -> argparse.Namespace:
         "--prompt",
         default=f"A photo of {PLACEHOLDER_TOKEN}",
         help=f"Text prompt for inference (default: 'A photo of {PLACEHOLDER_TOKEN}')",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility. Omit for random result.",
+    )
+    parser.add_argument(
+        "--embedding_steps",
+        type=int,
+        default=None,
+        help="Use embedding from a specific training step (e.g. 500, 1000, 1500, 2000, 2500, 3000). Default: final learned_embeds.safetensors",
+    )
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=12.0,
+        help="Guidance scale: higher = more prompt adherence (default: 12.0, range: 7-20)",
+    )
+    parser.add_argument(
+        "--negative_prompt",
+        default="blurry, low quality, deformed, ugly, bad anatomy, watermark, text",
+        help="Negative prompt to suppress unwanted features",
     )
     parser.add_argument(
         "--num_inference_steps",

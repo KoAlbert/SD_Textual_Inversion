@@ -5,3 +5,8 @@ __pycache__/
 .env
 textual_inversion_cat/checkpoint-*/
 test_run_output/
+textual_inversion_Karby_toy/
+batch_seeds_output/
+batch_seeds_output_3000/
+Karby_toy_example/
+Karby_toy_example_old/
